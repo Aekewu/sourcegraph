@@ -48,20 +48,28 @@ func main() {
 	// this includes any endpoints from `siteConfigSubscriber`, reverse-proxying Grafana, etc.
 	router := mux.NewRouter()
 
+	// we need alertmanager to be online in order to continue
+	log.Info("waiting for alertmanager")
+	alertmanager := amclient.NewHTTPClientWithConfig(nil, &amclient.TransportConfig{
+		Host:     fmt.Sprintf("127.0.0.1:%s", alertmanagerPort),
+		BasePath: fmt.Sprintf("/%s/api/v2", alertmanagerPathPrefix),
+		Schemes:  []string{"http"},
+	})
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if err := waitForAlertmanager(waitCtx, alertmanager); err != nil {
+		log.Crit(err.Error())
+		os.Exit(1)
+	}
+	log.Debug("detected alertmanager ready")
+
+	promwrapperRoutes := router.PathPrefix("/prom-wrapper").Subrouter()
+
 	// subscribe to configuration
 	if noConfig == "true" {
 		log.Info("DISABLE_SOURCEGRAPH_CONFIG=true; configuration syncing is disabled")
 	} else {
 		log.Info("initializing configuration")
-		alertmanager := amclient.NewHTTPClientWithConfig(nil, &amclient.TransportConfig{
-			Host:     fmt.Sprintf("127.0.0.1:%s", alertmanagerPort),
-			BasePath: fmt.Sprintf("/%s/api/v2", alertmanagerPathPrefix),
-			Schemes:  []string{"http"},
-		})
-
-		// limit the amount of time we spend spinning up the subscriber before erroring
-		newSubscriberCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		config, err := NewSiteConfigSubscriber(newSubscriberCtx, log, alertmanager)
+		config, err := NewSiteConfigSubscriber(log, alertmanager)
 		if err != nil {
 			log.Crit("failed to configuration subscriber", "error", err)
 			os.Exit(1)
@@ -72,8 +80,11 @@ func main() {
 		go config.Subscribe(ctx)
 
 		// serve subscriber status
-		router.PathPrefix("/prom-wrapper/config-subscriber").Handler(config.Handler())
+		promwrapperRoutes.PathPrefix("/config-subscriber").Handler(config.Handler())
 	}
+
+	// serve alerts status summaries
+	promwrapperRoutes.PathPrefix("/alerts-status").Handler(NewAlertsStatusReporter(log, alertmanager).Handler())
 
 	// serve alertmanager via reverse proxy
 	router.PathPrefix(fmt.Sprintf("/%s", alertmanagerPathPrefix)).Handler(&httputil.ReverseProxy{

@@ -37,16 +37,14 @@ func init() {
 			return
 		}
 
-		// set up request to fetch status from grafana-wrapper
+		// general problems with prometheus configuration and reachability are reported in site_alerts.go (activeAlertsAlert), so avoid duplicating issues here
 		promURL, err := url.Parse(prometheusutil.PrometheusURL)
 		if err != nil {
-			problems = append(problems, conf.NewSiteProblem(fmt.Sprintf("`observability.alerts` are configured, but Prometheus configuration is invalid: %v", err)))
 			return
 		}
 		promURL.Path = "/prom-wrapper/config-subscriber"
 		req, err := http.NewRequest("GET", promURL.String(), nil)
 		if err != nil {
-			problems = append(problems, conf.NewSiteProblem(fmt.Sprintf("`observability.alerts`: unable to fetch Prometheus status: %v", err)))
 			return
 		}
 
@@ -55,11 +53,11 @@ func init() {
 		defer cancel()
 		resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 		if err != nil {
-			problems = append(problems, conf.NewSiteProblem(fmt.Sprintf("`observability.alerts`: Prometheus is unreachable: %v", err)))
+			problems = append(problems, conf.NewSiteProblem(fmt.Sprintf("`observability.alerts`: unable to fetch status: %v", err)))
 			return
 		}
 		if resp.StatusCode != 200 {
-			problems = append(problems, conf.NewSiteProblem(fmt.Sprintf("`observability.alerts`: Prometheus is unreachable: status code %d", resp.StatusCode)))
+			problems = append(problems, conf.NewSiteProblem(fmt.Sprintf("`observability.alerts`: unable to fetch status: status code %d", resp.StatusCode)))
 			return
 		}
 

@@ -286,10 +286,7 @@ If usage is low, consider decreasing the above values.
 
 **Descriptions:**
 
-- _gitserver: 1s+ echo command duration test_
-
-
-- _gitserver: 2s+ echo command duration test_
+- _gitserver: 1e-05s+ echo command duration test_
 
 **Possible solutions:**
 
