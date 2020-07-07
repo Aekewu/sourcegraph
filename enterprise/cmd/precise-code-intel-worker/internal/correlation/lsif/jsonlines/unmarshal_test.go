@@ -16,7 +16,7 @@ func TestUnmarshalElement(t *testing.T) {
 	}
 
 	expectedElement := lsif.Element{
-		ID:    "47",
+		ID:    47,
 		Type:  "vertex",
 		Label: "test",
 	}
@@ -32,7 +32,7 @@ func TestUnmarshalElementNumericIDs(t *testing.T) {
 	}
 
 	expectedElement := lsif.Element{
-		ID:    "47",
+		ID:    47,
 		Type:  "vertex",
 		Label: "test",
 	}
@@ -48,10 +48,10 @@ func TestUnmarshalEdge(t *testing.T) {
 	}
 
 	expectedEdge := lsif.Edge{
-		OutV:     "12",
-		InV:      "",
-		InVs:     []string{"07"},
-		Document: "03",
+		OutV:     12,
+		InV:      0,
+		InVs:     []int{7},
+		Document: 3,
 	}
 	if diff := cmp.Diff(expectedEdge, edge); diff != "" {
 		t.Errorf("unexpected edge (-want +got):\n%s", diff)
@@ -65,10 +65,10 @@ func TestUnmarshalEdgeNumericIDs(t *testing.T) {
 	}
 
 	expectedEdge := lsif.Edge{
-		OutV:     "12",
-		InV:      "",
-		InVs:     []string{"7"},
-		Document: "3",
+		OutV:     12,
+		InV:      0,
+		InVs:     []int{7},
+		Document: 3,
 	}
 	if diff := cmp.Diff(expectedEdge, edge); diff != "" {
 		t.Errorf("unexpected edge (-want +got):\n%s", diff)
@@ -98,10 +98,10 @@ func TestUnmarshalDocument(t *testing.T) {
 
 	expectedDocument := lsif.Document{
 		URI:         "file:///test/root/foo.go",
-		Contains:    datastructures.IDSet{},
-		Diagnostics: datastructures.IDSet{},
+		Contains:    datastructures.NewIDSet(),
+		Diagnostics: datastructures.NewIDSet(),
 	}
-	if diff := cmp.Diff(expectedDocument, document); diff != "" {
+	if diff := cmp.Diff(expectedDocument, document, datastructures.IDSetComparer); diff != "" {
 		t.Errorf("unexpected document (-want +got):\n%s", diff)
 	}
 }
@@ -117,12 +117,12 @@ func TestUnmarshalRange(t *testing.T) {
 		StartCharacter:     2,
 		EndLine:            3,
 		EndCharacter:       4,
-		DefinitionResultID: "",
-		ReferenceResultID:  "",
-		HoverResultID:      "",
-		MonikerIDs:         datastructures.IDSet{},
+		DefinitionResultID: 0,
+		ReferenceResultID:  0,
+		HoverResultID:      0,
+		MonikerIDs:         datastructures.NewIDSet(),
 	}
-	if diff := cmp.Diff(expectedRange, r); diff != "" {
+	if diff := cmp.Diff(expectedRange, r, datastructures.IDSetComparer); diff != "" {
 		t.Errorf("unexpected range (-want +got):\n%s", diff)
 	}
 }

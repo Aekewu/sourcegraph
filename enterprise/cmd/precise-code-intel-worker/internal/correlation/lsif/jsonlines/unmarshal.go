@@ -1,11 +1,10 @@
 package jsonlines
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
-	"strings"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/sourcegraph/sourcegraph/enterprise/cmd/precise-code-intel-worker/internal/correlation/datastructures"
@@ -16,16 +15,16 @@ var unmarshaller = jsoniter.ConfigFastest
 
 func unmarshalElement(line []byte) (_ lsif.Element, err error) {
 	var payload struct {
-		ID    StringOrInt `json:"id"`
-		Type  string      `json:"type"`
-		Label string      `json:"label"`
+		ID    ID     `json:"id"`
+		Type  string `json:"type"`
+		Label string `json:"label"`
 	}
 	if err := unmarshaller.Unmarshal(line, &payload); err != nil {
 		return lsif.Element{}, err
 	}
 
 	element := lsif.Element{
-		ID:    string(payload.ID),
+		ID:    int(payload.ID),
 		Type:  payload.Type,
 		Label: payload.Label,
 	}
@@ -43,25 +42,25 @@ func unmarshalElement(line []byte) (_ lsif.Element, err error) {
 
 func unmarshalEdge(line []byte) (interface{}, error) {
 	var payload struct {
-		OutV     StringOrInt   `json:"outV"`
-		InV      StringOrInt   `json:"inV"`
-		InVs     []StringOrInt `json:"inVs"`
-		Document StringOrInt   `json:"document"`
+		OutV     ID   `json:"outV"`
+		InV      ID   `json:"inV"`
+		InVs     []ID `json:"inVs"`
+		Document ID   `json:"document"`
 	}
 	if err := unmarshaller.Unmarshal(line, &payload); err != nil {
 		return lsif.Edge{}, err
 	}
 
-	var inVs []string
+	var inVs []int
 	for _, inV := range payload.InVs {
-		inVs = append(inVs, string(inV))
+		inVs = append(inVs, int(inV))
 	}
 
 	return lsif.Edge{
-		OutV:     string(payload.OutV),
-		InV:      string(payload.InV),
+		OutV:     int(payload.OutV),
+		InV:      int(payload.InV),
 		InVs:     inVs,
-		Document: string(payload.Document),
+		Document: int(payload.Document),
 	}, nil
 }
 
@@ -100,8 +99,8 @@ func unmarshalDocument(line []byte) (interface{}, error) {
 
 	return lsif.Document{
 		URI:         payload.URI,
-		Contains:    datastructures.IDSet{},
-		Diagnostics: datastructures.IDSet{},
+		Contains:    datastructures.NewIDSet(),
+		Diagnostics: datastructures.NewIDSet(),
 	}, nil
 }
 
@@ -123,7 +122,7 @@ func unmarshalRange(line []byte) (interface{}, error) {
 		StartCharacter: payload.Start.Character,
 		EndLine:        payload.End.Line,
 		EndCharacter:   payload.End.Character,
-		MonikerIDs:     datastructures.IDSet{},
+		MonikerIDs:     datastructures.NewIDSet(),
 	}, nil
 }
 
@@ -140,10 +139,15 @@ func unmarshalHover(line []byte) (interface{}, error) {
 
 	var target []json.RawMessage
 	if err := unmarshaller.Unmarshal(payload.Result.Contents, &target); err != nil {
-		return unmarshalHoverPart(payload.Result.Contents)
+		v, err := unmarshalHoverPart(payload.Result.Contents)
+		if err != nil {
+			return nil, err
+		}
+
+		return string(v), nil
 	}
 
-	var parts []string
+	var parts [][]byte
 	for _, t := range target {
 		part, err := unmarshalHoverPart(t)
 		if err != nil {
@@ -153,29 +157,35 @@ func unmarshalHover(line []byte) (interface{}, error) {
 		parts = append(parts, part)
 	}
 
-	return strings.Join(parts, "\n\n---\n\n"), nil
+	return string(bytes.Join(parts, []byte("\n\n---\n\n"))), nil
 }
 
-func unmarshalHoverPart(raw json.RawMessage) (string, error) {
+func unmarshalHoverPart(raw json.RawMessage) ([]byte, error) {
 	var strPayload string
 	if err := unmarshaller.Unmarshal(raw, &strPayload); err == nil {
-		return strings.TrimSpace(strPayload), nil
+		return bytes.TrimSpace([]byte(strPayload)), nil
 	}
 
 	var objPayload struct {
-		Kind     string `json:"kind"`
 		Language string `json:"language"`
 		Value    string `json:"value"`
 	}
 	if err := unmarshaller.Unmarshal(raw, &objPayload); err != nil {
-		return "", errors.New("unrecognized hover format")
+		return nil, errors.New("unrecognized hover format")
 	}
 
-	if objPayload.Language != "" {
-		return fmt.Sprintf("```%s\n%s\n```", objPayload.Language, objPayload.Value), nil
+	if len(objPayload.Language) > 0 {
+		v := make([]byte, 0, 8+len(objPayload.Language)+len(objPayload.Value))
+		v = append(v, "```"...)
+		v = append(v, []byte(objPayload.Language)...)
+		v = append(v, '\n')
+		v = append(v, []byte(objPayload.Value)...)
+		v = append(v, "\n```"...)
+
+		return v, nil
 	}
 
-	return strings.TrimSpace(objPayload.Value), nil
+	return bytes.TrimSpace([]byte(objPayload.Value)), nil
 }
 
 func unmarshalMoniker(line []byte) (interface{}, error) {
@@ -252,6 +262,21 @@ func unmarshalDiagnosticResult(line []byte) (interface{}, error) {
 	}
 
 	return lsif.DiagnosticResult{Result: diagnostics}, nil
+}
+
+// TODO(efritz) - make non-global
+var DefaultInterner = NewInterner()
+
+type ID int
+
+func (id *ID) UnmarshalJSON(raw []byte) error {
+	v, err := DefaultInterner.Intern(raw)
+	if err != nil {
+		return err
+	}
+
+	*id = ID(v)
+	return nil
 }
 
 type StringOrInt string
