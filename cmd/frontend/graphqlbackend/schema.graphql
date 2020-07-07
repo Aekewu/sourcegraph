@@ -376,9 +376,6 @@ type Mutation {
     # the same namespace with the same name already exists, an error is returned. The newly created
     # campaign is returned.
     createCampaign(
-        # The campaign's namespace (either a user or organization).
-        namespace: ID!
-
         # The campaign spec that describes the desired state of the campaign.
         campaignSpec: ID!
     ): Campaign!
@@ -387,9 +384,6 @@ type Mutation {
     # campaign exists in the namespace with the name given in the campaign spec, a campaign will be
     # created. Otherwise, the existing campaign will be updated. The campaign is returned.
     applyCampaign(
-        # The campaign's namespace (either a user or organization).
-        namespace: ID!
-
         # The campaign spec that describes the new desired state of the campaign.
         campaignSpec: ID!
 
@@ -418,18 +412,18 @@ type Mutation {
     deleteCampaign(campaign: ID!): EmptyResponse
 
     # Upload a changeset spec that will be used in a future update to a campaign. The changeset spec
-    # is stored and can be referenced by its ID in the applyCampaign mutation. Just uploading the
-    # changeset spec does not result in changes to the campaign or any of its changesets; you need
-    # to call applyCampaign to use it.
+    # is stored and can be referenced by its ID in the createCampaignSpec mutation. Just uploading
+    # the changeset spec does not result in changes to the campaign or any of its changesets; you
+    # need to call applyCampaign to use it.
     #
     # You can use this mutation to upload large changeset specs (e.g., containing large diffs) in
-    # individual HTTP requests. Then, in the eventual applyCampaign call, you just refer to the
+    # individual HTTP requests. Then, in the eventual createCampaignSpec call, you just refer to the
     # changeset specs by their IDs. This lets you avoid problems when updating large campaigns where
     # a large HTTP request body (e.g., with many large diffs in the changeset specs) would be
     # rejected by the web server/proxy or would be very slow.
     #
     # The returned ChangesetSpec is immutable and expires after a certain period of time (if not
-    # used in a call to applyCampaign), which can be queried on ChangesetSpec.expiresAt.
+    # used), which can be queried on ChangesetSpec.expiresAt.
     createChangesetSpec(
         # The raw changeset spec (as JSON).
         changesetSpec: String!
@@ -470,12 +464,71 @@ type ChangesetSpec implements Node {
     # between revealing the problem and merging the fixes is as short as possible.
     id: ID!
 
-    # TODO(sqs): add fields - the main requirements here will be imposed by the Campaign.changesets
-    # field and the CampaignDelta field describing the delta to changesets.
+    # The description of the changeset.
+    description: ChangesetDescription!
 
     # The date, if any, when this changeset spec expires and is automatically purged. A changeset
-    # spec never expires if its campaign spec has been applied.
+    # spec never expires (and this field is null) if its campaign spec has been applied.
     expiresAt: DateTime
+}
+
+# All possible types of changesets that can be specified in a changeset spec.
+union ChangesetDescription = ExistingChangesetReference | GitBranchChangesetDescription
+
+# A reference to a changeset that already exists on a code host (and was not created by the
+# campaign).
+type ExistingChangesetReference {
+    # The repository that contains the existing changeset on the code host.
+    baseRepository: ID!
+
+    # The ID that uniquely identifies the existing changeset on the code host.
+    #
+    # For GitHub and Bitbucket Server, this is the pull request number (as a string) in the
+    # base repository. For example, "1234" for PR #1234.
+    externalID: String!
+}
+
+# A description of a changeset that represents the proposal to merge one branch into another.
+#
+# This is used to describe a pull request (on GitHub and Bitbucket Server).
+type GitBranchChangesetDescription {
+    # The repository that this changeset spec is proposing to change.
+    baseRepository: ID!
+
+    # The full name of the Git ref in the base repository that this changeset is based on (and is
+    # proposing to be merged into). This ref must exist on the base repository. For example,
+    # "refs/heads/master" or "refs/heads/main".
+    baseRef: String!
+
+    # The repository that contains the branch with this changeset's changes.
+    #
+    # Fork repositories and cross-repository changesets are not yet supported. Therefore,
+    # headRepository must be equal to baseRepository.
+    headRepository: ID!
+
+    # The full name of the Git ref that holds the changes proposed by this changeset. This ref will
+    # be created or updated with the commits. For example, "refs/heads/fix-foo" (for
+    # the Git branch "fix-foo").
+    headRef: String!
+
+    # The Git commits with the proposed changes. These commits are pushed to the head ref.
+    #
+    # Only 1 commit is supported.
+    commits: [GitCommitDescription!]!
+}
+
+# A description of a Git commit.
+#
+# TODO: Support specifying committer/author.
+type GitCommitDescription {
+    # The Git commit message.
+    message: String!
+
+    # The commit diff (in unified diff format).
+    #
+    # The filenames must not be prefixed (e.g., with 'a/' and 'b/'). Tip: use 'git diff --no-prefix'
+    # to omit the prefix.
+    diff: String!
 }
 
 # A campaign spec is an immutable description of the desired state of a campaign. To create a
@@ -542,6 +595,91 @@ input UserPermission {
     permission: RepositoryPermission = READ
 }
 
+# A patch to apply to a repository (in a new branch) when a campaign is created
+# from the parent patchset.
+input PatchInput {
+    # The repository that this patch is applied to.
+    repository: ID!
+
+    # The base revision in the repository that this patch is based on.
+    # Example: "4095572721c6234cd72013fd49dff4fb48f0f8a4"
+    baseRevision: String!
+
+    # The reference to the base revision at the time the patch was created.
+    # Example: "refs/heads/master"
+    baseRef: String!
+
+    # The patch (in unified diff format) to apply.
+    #
+    # The filenames must not be prefixed (e.g., with 'a/' and 'b/'). Tip: use 'git diff --no-prefix'
+    # to omit the prefix.
+    patch: String!
+}
+
+# Input arguments for creating a campaign.
+input CreateCampaignInput {
+    # The ID of the namespace where this campaign is defined.
+    namespace: ID!
+
+    # The name of the campaign.
+    name: String!
+
+    # The description of the campaign (as Markdown).
+    description: String
+
+    # The name of the branch that will be created for each changeset on the code host if the
+    # patchSet attribute is specified. If a branch with the given name already exists, a fallback
+    # name will be created by adding a count to the end of the branch name until the name doesn't
+    # exist. Example: "my-branch-name" becomes "my-branch-name-1". Required if the patchSet
+    # attribute is specified.
+    branch: String
+
+    # An optional reference to a patchset that was created before this
+    # mutation. If null, existing changesets can be added manually. If set,
+    # they will be created based on the patches belonging to the patchset. An
+    # error will be returned if the patchset has expired. Using a patchset to
+    # create or update a campaign will retain it for the lifetime of the
+    # campaign and prevent it from expiring.
+    patchSet: ID
+}
+
+# Input arguments for updating a campaign.
+input UpdateCampaignInput {
+    # The ID of the campaign to update.
+    id: ID!
+
+    # The updated name of the campaign (if non-null).
+    name: String
+
+    # The branch name. This is not allowed if the campaign or any individual changesets have already
+    # been published.
+    branch: String
+
+    # The updated description of the campaign (as Markdown), if non-null.
+    description: String
+
+    # A patchset that describes a new set of changes to make. If set, the previous changesets are
+    # updated or closed, and new changesetes are created, to reflect the new patchset.
+    patchSet: ID
+}
+
+# A set of patches that will be applied to code by a campaign. Each patch corresponds to a single
+# changeset that will be created on a code host. A patchset is cached and is addressable by its ID
+# for a limited amount of time.
+type PatchSet implements Node {
+    # The unique ID of this patchset.
+    id: ID!
+
+    # The proposed patches for the changesets that will be created by the campaign.
+    patches(first: Int): PatchConnection!
+
+    # The URL where the patchset preview is displayed (and where you can create a campaign from it).
+    previewURL: String!
+
+    # The diff stat for all the patches in the patchset.
+    diffStat: DiffStat!
+}
+
 # A paginated list of repository diffs committed to git.
 type RepositoryComparisonConnection {
     # A list of repository diffs committed to git.
@@ -585,6 +723,10 @@ type BackgroundProcessStatus {
 type Campaign implements Node {
     # The unique ID for the campaign.
     id: ID!
+
+    # The patchset that was used to create this campaign. If null, changesets are added to the
+    # campaign manually.
+    patchSet: PatchSet
 
     # The current status of creating or updating the campaign's changesets on the code host.
     status: BackgroundProcessStatus!
@@ -647,7 +789,18 @@ type Campaign implements Node {
     # The date and time when the campaign was closed.
     closedAt: DateTime
 
-    # The diff stat for all the changesets in the campaign.
+    # The patches that will be turned into changesets on the code host when published.
+    # If the campaign is a "manual" campaign and doesn't have a patchset attached, there won't be
+    # any nodes returned by this connection. When publishing a changeset, the number of nodes in
+    # changesets will increase with each decrease in patches. The completed count in the
+    # Campaign.status field increments with every patch turned into an ExternalChangeset.
+    # This can contain patches that have been enqueued for publication.
+    patches(first: Int): PatchConnection!
+
+    # Returns whether "patches" contains patches that have not been enqueued for publication yet.
+    hasUnpublishedPatches: Boolean!
+
+    # The diff stat for all the patches and changesets in the campaign.
     diffStat: DiffStat!
 }
 
@@ -707,6 +860,50 @@ enum ChangesetCheckState {
     FAILED
 }
 
+# The input to the createChangesets mutation.
+input CreateChangesetInput {
+    # The ID of the repository that this changeset belongs to.
+    repository: ID!
+    # The external ID that uniquely identifies this changeset in the repository on the code host.
+    # For GitHub and Bitbucket Server, this is the pull request number (as a string).
+    externalID: String!
+}
+
+# A campaign patch is code change on a repository branch that a user might or might not
+# have access to.
+# It is used to create a changeset on a code host as part of a campaign.
+interface PatchInterface {
+    # The id of the patch.
+    id: ID!
+}
+
+# A patch is a patch in a repository that the user has read-access
+# to.
+type Patch implements PatchInterface & Node {
+    # The id of the patch.
+    id: ID!
+
+    # The repository in which the patch is applied.
+    repository: Repository!
+
+    # The actual diff of the patch.
+    diff: PreviewRepositoryComparison!
+
+    # Whether the patch is enqueued for publication. Defaults to false. It will be true when any of
+    # the following has occurred:
+    #
+    # - A campaign has been created with the patchset to which this patch belongs.
+    # - The patch has been individually published through the publishChangeset mutation.
+    publicationEnqueued: Boolean!
+}
+
+# A hidden patch is a patch in a repository that the user does NOT have
+# read-access to.
+type HiddenPatch implements PatchInterface & Node {
+    # The id of the patch.
+    id: ID!
+}
+
 # A label attached to a changeset on a code host.
 type ChangesetLabel {
     # The label's text.
@@ -728,6 +925,8 @@ interface Changeset {
         first: Int
         # Only return campaigns in this state.
         state: CampaignState
+        # Only return campaigns that have a patchset.
+        hasPatchSet: Boolean
     ): CampaignConnection!
 
     # The state of the changeset.
@@ -754,6 +953,8 @@ type HiddenExternalChangeset implements Node & Changeset {
         first: Int
         # Only return campaigns in this state.
         state: CampaignState
+        # Only return campaigns that have a patchset.
+        hasPatchSet: Boolean
     ): CampaignConnection!
 
     # The state of the changeset.
@@ -787,6 +988,8 @@ type ExternalChangeset implements Node & Changeset {
         first: Int
         # Only return campaigns in this state.
         state: CampaignState
+        # Only return campaigns that have a patchset.
+        hasPatchSet: Boolean
         # Only include campaigns that the viewer can administer.
         viewerCanAdminister: Boolean
     ): CampaignConnection!
@@ -849,6 +1052,64 @@ type ChangesetConnection {
     nodes: [Changeset!]!
 
     # The total number of changesets in the connection.
+    totalCount: Int!
+
+    # Pagination information.
+    pageInfo: PageInfo!
+
+    # Information about filters that can be applied to the list.
+    filters: ChangesetConnectionFilters!
+}
+
+# Filters that can be applied to a list of changesets.
+type ChangesetConnectionFilters {
+    # Repository filters.
+    repository: [RepositoryFilter!]!
+
+    # Label filters.
+    label: [LabelFilter!]!
+
+    # The number of changesets in the connection (ignoring pagination) that are open.
+    openCount: Int!
+
+    # The number of changesets in the connection (ignoring pagination) that are closed or merged.
+    closedCount: Int!
+}
+
+# A repository filter that can be applied to a list.
+type RepositoryFilter {
+    # The repository.
+    repository: Repository!
+
+    # The item count for this filter.
+    count: Int
+
+    # Whether this filter is currently applied to the list.
+    isApplied: Boolean!
+}
+
+# A label filter that can be applied to a list.
+type LabelFilter {
+    # The label. If the list contains items labeled with labels of the same name from different
+    # repositories, this field is null.
+    label: ChangesetLabel
+
+    # The label name.
+    labelName: String!
+
+    # The item count for this filter.
+    count: Int
+
+    # Whether this filter is currently applied to the list.
+    isApplied: Boolean!
+}
+
+# A list of patches.
+type PatchConnection {
+    # A list of patches.
+    nodes: [PatchInterface!]!
+
+    # The total number of patches in the connection.
     totalCount: Int!
 
     # Pagination information.
@@ -1052,15 +1313,6 @@ type Query {
     # Looks up a node by ID.
     node(id: ID!): Node
 
-    # A list of campaigns.
-    campaigns(
-        # Returns the first n campaigns from the list.
-        first: Int
-        state: CampaignState
-        # Only include campaigns that the viewer can administer.
-        viewerCanAdminister: Boolean
-    ): CampaignConnection!
-
     # Looks up a repository by either name or cloneURL.
     repository(
         # Query the repository by name, for example "github.com/gorilla/mux".
@@ -1206,6 +1458,13 @@ type Query {
     repoGroups: [RepoGroup!]!
     # (experimental) All version contexts.
     versionContexts: [VersionContext!]!
+    # (experimental) Return the parse tree of a search query.
+    parseSearchQuery(
+        # The search query (such as "repo:myrepo foo").
+        query: String = ""
+        # The parser to use for this query.
+        patternType: SearchPatternType = literal
+    ): JSONValue
     # The current site.
     site: Site!
     # Retrieve responses to surveys.
@@ -1298,6 +1557,46 @@ type Query {
         # 'LSIFIndexConnection.pageInfo.endCursor' that is returned.
         after: String
     ): LSIFIndexConnection!
+
+    #
+    # CAMPAIGNS
+    #
+
+    # A list of campaigns.
+    campaigns(
+        # Returns the first n campaigns from the list.
+        first: Int
+        state: CampaignState
+        # Only return campaigns that have a patchset.
+        hasPatchSet: Boolean
+        # Only include campaigns that the viewer can administer.
+        viewerCanAdminister: Boolean
+    ): CampaignConnection!
+
+    # Preview the effect of applying a campaign spec. If an existing campaign exists in the
+    # namespace with the same name as that in the campaign spec, it returns the delta (difference)
+    # between the campaign's desired state (spec) and its actual state (status), as a list of
+    # changes to be applied to external state (such as repositories and changesets on code hosts).
+    # Otherwise, it returns the operations that need to be performed to create the campaign.
+    #
+    # The result is a snapshot and may immediately become stale because it is dependent on external
+    # state that can change at any time (e.g., a repository on a code host is updated).
+    #
+    # The result is computed using the viewer's credentials. Two viewers with different access
+    # levels to the associated repositories may see different results from this query.
+    campaignDelta(
+        # The namespace in which to compute the delta.
+        namespace: ID!
+
+        # The desired state of the campaign.
+        campaignSpec: ID!
+
+        # If set, return an error if the campaign identified using the namespace and campaignSpec
+        # parameters does not match the campaign with this ID. This lets callers use a stable ID
+        # that refers to a specific campaign during an edit session (and is not susceptible to
+        # conflicts if the underlying campaign is moved to a different namespace, renamed, or deleted).
+        ensureCampaign: ID
+    ): CampaignDelta!
 }
 
 # The version of the search syntax.
@@ -1797,8 +2096,6 @@ type Repository implements Node & GenericSearchResultInterface {
         base: String
         # The head of the diff ("new" or "right-hand side"), or "HEAD" if not specified.
         head: String
-        # Attempt to fetch missing revisions from remote if they are not found
-        fetchMissing: Boolean = true
     ): RepositoryComparison!
     # The repository's contributors.
     contributors(
