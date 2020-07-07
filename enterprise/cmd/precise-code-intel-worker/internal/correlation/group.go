@@ -2,6 +2,7 @@ package correlation
 
 import (
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -82,43 +83,43 @@ func serializeDocument(state *State, doc lsif.Document) types.DocumentData {
 		Diagnostics:        []types.DiagnosticData{},
 	}
 
-	for rangeID := range doc.Contains {
+	for _, rangeID := range doc.Contains.Values(nil) {
 		k := rangeID
 		v := state.RangeData[rangeID]
 
 		var monikerIDs []types.ID
-		for m := range v.MonikerIDs {
-			monikerIDs = append(monikerIDs, types.ID(m))
+		for _, m := range v.MonikerIDs.Values(nil) {
+			monikerIDs = append(monikerIDs, toID(m))
 		}
 
-		document.Ranges[types.ID(k)] = types.RangeData{
+		document.Ranges[toID(k)] = types.RangeData{
 			StartLine:          v.StartLine,
 			StartCharacter:     v.StartCharacter,
 			EndLine:            v.EndLine,
 			EndCharacter:       v.EndCharacter,
-			DefinitionResultID: types.ID(v.DefinitionResultID),
-			ReferenceResultID:  types.ID(v.ReferenceResultID),
-			HoverResultID:      types.ID(v.HoverResultID),
+			DefinitionResultID: toID(v.DefinitionResultID),
+			ReferenceResultID:  toID(v.ReferenceResultID),
+			HoverResultID:      toID(v.HoverResultID),
 			MonikerIDs:         monikerIDs,
 		}
 
-		if v.HoverResultID != "" {
+		if v.HoverResultID != 0 {
 			hoverData := state.HoverData[v.HoverResultID]
-			document.HoverResults[types.ID(v.HoverResultID)] = hoverData
+			document.HoverResults[toID(v.HoverResultID)] = hoverData
 		}
 
-		for monikerID := range v.MonikerIDs {
+		for _, monikerID := range v.MonikerIDs.Values(nil) {
 			moniker := state.MonikerData[monikerID]
-			document.Monikers[types.ID(monikerID)] = types.MonikerData{
+			document.Monikers[toID(monikerID)] = types.MonikerData{
 				Kind:                 moniker.Kind,
 				Scheme:               moniker.Scheme,
 				Identifier:           moniker.Identifier,
-				PackageInformationID: types.ID(moniker.PackageInformationID),
+				PackageInformationID: toID(moniker.PackageInformationID),
 			}
 
-			if moniker.PackageInformationID != "" {
+			if moniker.PackageInformationID != 0 {
 				packageInformation := state.PackageInformationData[moniker.PackageInformationID]
-				document.PackageInformation[types.ID(moniker.PackageInformationID)] = types.PackageInformationData{
+				document.PackageInformation[toID(moniker.PackageInformationID)] = types.PackageInformationData{
 					Name:    packageInformation.Name,
 					Version: packageInformation.Version,
 				}
@@ -126,7 +127,7 @@ func serializeDocument(state *State, doc lsif.Document) types.DocumentData {
 		}
 	}
 
-	for diagnosticID := range doc.Diagnostics {
+	for _, diagnosticID := range doc.Diagnostics.Values(nil) {
 		for _, diagnostic := range state.Diagnostics[diagnosticID].Result {
 			document.Diagnostics = append(document.Diagnostics, types.DiagnosticData{
 				Severity:       diagnostic.Severity,
@@ -168,25 +169,25 @@ func serializeResultChunks(state *State, numResultChunks int) map[int]types.Resu
 	return out
 }
 
-func addToChunk(state *State, resultChunks []types.ResultChunkData, data map[string]datastructures.DefaultIDSetMap) {
+func addToChunk(state *State, resultChunks []types.ResultChunkData, data map[int]datastructures.DefaultIDSetMap) {
 	for id, documentRanges := range data {
-		resultChunk := resultChunks[types.HashKey(types.ID(id), len(resultChunks))]
+		resultChunk := resultChunks[types.HashKey(toID(id), len(resultChunks))]
 
 		if len(documentRanges) == 0 {
 			// We may have pruned all document/ranges from a definition or reference result,
 			// but we add a dummy set here so that we don't hit an unknown key during queries.
 			// TODO(efritz) - remove these as part of the prune pass instead
-			resultChunk.DocumentIDRangeIDs[types.ID(id)] = nil
+			resultChunk.DocumentIDRangeIDs[toID(id)] = nil
 		}
 
 		for documentID, rangeIDs := range documentRanges {
 			doc := state.DocumentData[documentID]
-			resultChunk.DocumentPaths[types.ID(documentID)] = doc.URI
+			resultChunk.DocumentPaths[toID(documentID)] = doc.URI
 
-			for rangeID := range rangeIDs {
-				resultChunk.DocumentIDRangeIDs[types.ID(id)] = append(resultChunk.DocumentIDRangeIDs[types.ID(id)], types.DocumentIDRangeID{
-					DocumentID: types.ID(documentID),
-					RangeID:    types.ID(rangeID),
+			for _, rangeID := range rangeIDs.Values(nil) {
+				resultChunk.DocumentIDRangeIDs[toID(id)] = append(resultChunk.DocumentIDRangeIDs[toID(id)], types.DocumentIDRangeID{
+					DocumentID: toID(documentID),
+					RangeID:    toID(rangeID),
 				})
 			}
 		}
@@ -194,17 +195,19 @@ func addToChunk(state *State, resultChunks []types.ResultChunkData, data map[str
 }
 
 var (
-	getDefinitionResultID = func(r lsif.Range) string { return r.DefinitionResultID }
-	getReferenceResultID  = func(r lsif.Range) string { return r.ReferenceResultID }
+	getDefinitionResultID = func(r lsif.Range) int { return r.DefinitionResultID }
+	getReferenceResultID  = func(r lsif.Range) int { return r.ReferenceResultID }
 )
 
-func gatherMonikersLocations(state *State, data map[string]datastructures.DefaultIDSetMap, getResultID func(r lsif.Range) string) []types.MonikerLocations {
+func gatherMonikersLocations(state *State, data map[int]datastructures.DefaultIDSetMap, getResultID func(r lsif.Range) int) []types.MonikerLocations {
 	monikers := datastructures.DefaultIDSetMap{}
 	for _, r := range state.RangeData {
 		resultID := getResultID(r)
-		if resultID != "" && len(r.MonikerIDs) > 0 {
+		monikerIDs := r.MonikerIDs.Values(nil)
+
+		if resultID != 0 && len(monikerIDs) > 0 {
 			s := monikers.GetOrCreate(resultID)
-			for id := range r.MonikerIDs {
+			for _, id := range monikerIDs {
 				s.Add(id)
 			}
 		}
@@ -217,7 +220,7 @@ func gatherMonikersLocations(state *State, data map[string]datastructures.Defaul
 			continue
 		}
 
-		for monikerID := range monikerIDs {
+		for _, monikerID := range monikerIDs.Values(nil) {
 			var locations []types.Location
 			for documentID, rangeIDs := range documentRanges {
 				document := state.DocumentData[documentID]
@@ -225,7 +228,7 @@ func gatherMonikersLocations(state *State, data map[string]datastructures.Defaul
 					continue
 				}
 
-				for id := range rangeIDs {
+				for _, id := range rangeIDs.Values(nil) {
 					r := state.RangeData[id]
 
 					locations = append(locations, types.Location{
@@ -261,7 +264,7 @@ func gatherMonikersLocations(state *State, data map[string]datastructures.Defaul
 // TODO(efritz) - document
 func gatherPackages(state *State, dumpID int) []types.Package {
 	uniques := map[string]types.Package{}
-	for id := range state.ExportedMonikers {
+	for _, id := range state.ExportedMonikers.Values(nil) {
 		source := state.MonikerData[id]
 		packageInfo := state.PackageInformationData[source.PackageInformationID]
 
@@ -291,7 +294,7 @@ func gatherPackageReferences(state *State, dumpID int) ([]types.PackageReference
 	}
 
 	uniques := map[string]ExpandedPackageReference{}
-	for id := range state.ImportedMonikers {
+	for _, id := range state.ImportedMonikers.Values(nil) {
 		source := state.MonikerData[id]
 		packageInfo := state.PackageInformationData[source.PackageInformationID]
 
@@ -325,4 +328,12 @@ func gatherPackageReferences(state *State, dumpID int) ([]types.PackageReference
 
 func makeKey(parts ...string) string {
 	return strings.Join(parts, ":")
+}
+
+func toID(id int) types.ID {
+	if id == 0 {
+		return types.ID("")
+	}
+
+	return types.ID(strconv.FormatInt(int64(id), 10))
 }

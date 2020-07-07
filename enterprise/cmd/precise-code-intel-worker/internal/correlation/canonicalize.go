@@ -29,18 +29,18 @@ func canonicalize(state *State) {
 // unique canonical document. This function guarantees that duplicate document IDs are removed from
 // the correlation state.
 func canonicalizeDocuments(state *State) {
-	documentIDs := map[string][]string{}
+	documentIDs := map[string][]int{}
 	for documentID, doc := range state.DocumentData {
 		documentIDs[doc.URI] = append(documentIDs[doc.URI], documentID)
 	}
 	for _, v := range documentIDs {
-		sort.Strings(v)
+		sort.Ints(v)
 	}
 
 	for documentID, doc := range state.DocumentData {
 		// Choose canonical document alphabetically
 		if canonicalID := documentIDs[doc.URI][0]; documentID != canonicalID {
-			for id := range state.DocumentData[documentID].Contains {
+			for _, id := range state.DocumentData[documentID].Contains.Values(nil) {
 				// Move ranges into the canonical document
 				state.DocumentData[canonicalID].Contains.Add(id)
 			}
@@ -58,7 +58,7 @@ func canonicalizeDocuments(state *State) {
 // canonicalizeDocumentsInDefinitionReferences moves definition or reference result data from the
 // given document to the given canonical document and removes all references to the non-canonical
 // document.
-func canonicalizeDocumentsInDefinitionReferences(state *State, definitionReferenceData map[string]datastructures.DefaultIDSetMap, documentID, canonicalID string) {
+func canonicalizeDocumentsInDefinitionReferences(state *State, definitionReferenceData map[int]datastructures.DefaultIDSetMap, documentID, canonicalID int) {
 	for _, documentRanges := range definitionReferenceData {
 		rangeIDs, ok := documentRanges[documentID]
 		if !ok {
@@ -80,7 +80,7 @@ func canonicalizeDocumentsInDefinitionReferences(state *State, definitionReferen
 // choice.
 func canonicalizeReferenceResults(state *State) {
 	// Maintain a map from a reference result to its canonical identifier
-	canonicalIDs := map[string]string{}
+	canonicalIDs := map[int]int{}
 
 	for referenceResultID := range state.LinkedReferenceResults {
 		if _, ok := canonicalIDs[referenceResultID]; ok {
@@ -93,7 +93,7 @@ func canonicalizeReferenceResults(state *State) {
 		canonicalID, _ := linkedIDs.Choose()
 		canonicalReferenceResult := state.ReferenceData[canonicalID]
 
-		for linkedID := range linkedIDs {
+		for _, linkedID := range linkedIDs.Values(nil) {
 			// Mark canonical choice
 			canonicalIDs[linkedID] = canonicalID
 
@@ -121,13 +121,13 @@ func canonicalizeReferenceResults(state *State) {
 	}
 
 	// Invert the map to get a set of canonical identifiers
-	inverseMap := map[string]struct{}{}
+	inverseMap := datastructures.NewIDSet()
 	for _, canonicalID := range canonicalIDs {
-		inverseMap[canonicalID] = struct{}{}
+		inverseMap.Add(canonicalID)
 	}
 
 	for referenceResultID := range canonicalIDs {
-		if _, ok := inverseMap[referenceResultID]; !ok {
+		if !inverseMap.Contains(referenceResultID) {
 			// Remove non-canonical reference result
 			delete(state.ReferenceData, referenceResultID)
 		}
@@ -169,7 +169,7 @@ func canonicalizeRanges(state *State) {
 // canonicalizeResultSets "merges down" the definition, reference, and hover result identifiers
 // from the element's "next" result set if such an element exists and the identifier is not
 // already defined. This also merges down the moniker ids by unioning the sets.
-func canonicalizeResultSetData(state *State, id string, item lsif.ResultSet) lsif.ResultSet {
+func canonicalizeResultSetData(state *State, id int, item lsif.ResultSet) lsif.ResultSet {
 	if nextID, nextItem, ok := next(state, id); ok {
 		// Recursively canonicalize the next element
 		nextItem = canonicalizeResultSetData(state, nextID, nextItem)
@@ -187,13 +187,13 @@ func canonicalizeResultSetData(state *State, id string, item lsif.ResultSet) lsi
 // nextItem into item when not already defined. The moniker identifiers of nextItem are unioned
 // into the moniker identifiers of item.
 func mergeNextResultSetData(item, nextItem lsif.ResultSet) lsif.ResultSet {
-	if item.DefinitionResultID == "" {
+	if item.DefinitionResultID == 0 {
 		item = item.SetDefinitionResultID(nextItem.DefinitionResultID)
 	}
-	if item.ReferenceResultID == "" {
+	if item.ReferenceResultID == 0 {
 		item = item.SetReferenceResultID(nextItem.ReferenceResultID)
 	}
-	if item.HoverResultID == "" {
+	if item.HoverResultID == 0 {
 		item = item.SetHoverResultID(nextItem.HoverResultID)
 	}
 
@@ -205,13 +205,13 @@ func mergeNextResultSetData(item, nextItem lsif.ResultSet) lsif.ResultSet {
 // into item when not already defined. The moniker identifiers of nextItem are unioned into the
 // moniker identifiers of item.
 func mergeNextRangeData(item lsif.Range, nextItem lsif.ResultSet) lsif.Range {
-	if item.DefinitionResultID == "" {
+	if item.DefinitionResultID == 0 {
 		item = item.SetDefinitionResultID(nextItem.DefinitionResultID)
 	}
-	if item.ReferenceResultID == "" {
+	if item.ReferenceResultID == 0 {
 		item = item.SetReferenceResultID(nextItem.ReferenceResultID)
 	}
-	if item.HoverResultID == "" {
+	if item.HoverResultID == 0 {
 		item = item.SetHoverResultID(nextItem.HoverResultID)
 	}
 
@@ -223,10 +223,10 @@ func mergeNextRangeData(item lsif.Range, nextItem lsif.ResultSet) lsif.Range {
 // set will additionall contain the transitive closure of all moniker identifiers linked to any
 // moniker identifier in the original set. This ignores adding any local-kind monikers to the new
 // set.
-func gatherMonikers(state *State, source datastructures.IDSet) datastructures.IDSet {
-	monikers := datastructures.IDSet{}
-	for sourceID := range source {
-		for id := range state.LinkedMonikers.ExtractSet(sourceID) {
+func gatherMonikers(state *State, source *datastructures.IDSet) *datastructures.IDSet {
+	monikers := datastructures.NewIDSet()
+	for _, sourceID := range source.Values(nil) {
+		for _, id := range state.LinkedMonikers.ExtractSet(sourceID).Values(nil) {
 			if state.MonikerData[id].Kind != "local" {
 				monikers.Add(id)
 			}
@@ -237,10 +237,10 @@ func gatherMonikers(state *State, source datastructures.IDSet) datastructures.ID
 }
 
 // next returns the "next" identifier and result set element for the given identifier, if one exists.
-func next(state *State, id string) (string, lsif.ResultSet, bool) {
+func next(state *State, id int) (int, lsif.ResultSet, bool) {
 	nextID, ok := state.NextData[id]
 	if !ok {
-		return "", lsif.ResultSet{}, false
+		return 0, lsif.ResultSet{}, false
 	}
 
 	return nextID, state.ResultSetData[nextID], true
