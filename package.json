@@ -303,7 +303,7 @@
     "reactstrap": "^8.4.1",
     "recharts": "^1.8.5",
     "rxjs": "^6.6.0",
-    "sanitize-html": "^1.26.0",
+    "sanitize-html": "^2.3.2",
     "semver": "^7.3.2",
     "slugify": "^1.4.4",
     "sourcegraph": "link:packages/sourcegraph-extension-api",
